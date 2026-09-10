@@ -1,0 +1,34 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Virtual environments & IDE
+venv/
+env/
+.env
+.vscode/
+pyrightconfig.json
+
+# Large dataset files & archives
+data/
+dataset/
+images/
+*.zip
+*.tar.gz
+
+# Model checkpoints & weights (prevent accidental large git commits)
+checkpoints/
+*.pt
+*.pth
+
+# Generated outputs
+submission.csv
+
+# OS metadata
+.DS_Store
+Thumbs.db
