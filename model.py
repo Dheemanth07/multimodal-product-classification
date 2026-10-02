@@ -29,8 +29,10 @@ class VisionBranch(nn.Module):
             weights = models.MobileNet_V2_Weights.DEFAULT if pretrained else None
             try:
                 base_model = models.mobilenet_v2(weights=weights)
-            except Exception:
-                # Fallback if offline/local cache unavailable
+                if pretrained:
+                    print("[INFO] Successfully loaded official ImageNet pre-trained weights for MobileNetV2.")
+            except Exception as e:
+                print(f"[WARNING] Could not load pre-trained weights ({e}). Initializing MobileNetV2 with random weights.")
                 base_model = models.mobilenet_v2(weights=None)
             
             # Extract features only (without final 1000-class classifier)
@@ -43,7 +45,10 @@ class VisionBranch(nn.Module):
             weights = models.ResNet18_Weights.DEFAULT if pretrained else None
             try:
                 base_model = models.resnet18(weights=weights)
-            except Exception:
+                if pretrained:
+                    print("[INFO] Successfully loaded official ImageNet pre-trained weights for ResNet-18.")
+            except Exception as e:
+                print(f"[WARNING] Could not load pre-trained weights ({e}). Initializing ResNet-18 with random weights.")
                 base_model = models.resnet18(weights=None)
             
             # Exclude final fully connected layer
@@ -231,7 +236,7 @@ def get_model_summary_and_check_cap(model, max_param_cap=15_000_000):
     print(f"  * Remaining Parameter Headroom:   {remaining_budget:>12,}")
     print("=" * 65)
     
-    assert total_params <= max_param_cap, (
+    assert total_params < max_param_cap, (
         f"CRITICAL VIOLATION: Model has {total_params:,} parameters, "
         f"exceeding the strict limit of {max_param_cap:,}!"
     )

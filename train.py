@@ -7,6 +7,7 @@ plots loss/accuracy curves, and exports Kaggle submission.csv.
 
 import os
 import sys
+import json
 import argparse
 import numpy as np
 import pandas as pd
@@ -49,41 +50,44 @@ def parse_args():
 
 def resolve_paths(args):
     # Candidate paths for Kaggle and Local setups
-    kaggle_data_dir = "/kaggle/input/competitions/bcs-714-a-multimodal-fusion/data/data/"
-    kaggle_train_csv = "/kaggle/input/competitions/bcs-714-a-multimodal-fusion/train.csv"
-    kaggle_test_csv = "/kaggle/input/competitions/bcs-714-a-multimodal-fusion/test.csv"
+    candidate_dirs = [
+        ("/kaggle/input/bcs-714-a-multimodal-fusion", "data/data"),
+        ("/kaggle/input/competitions/bcs-714-a-multimodal-fusion", "data/data"),
+        ("/kaggle/input/bcs-714-a-multimodal-fusion", "data"),
+        (r"C:\Users\dheem\Downloads\bcs-714-a-multimodal-fusion", r"data\data"),
+        (".", "data/data"),
+        (".", "data")
+    ]
 
-    local_data_dir = r"C:\Users\dheem\Downloads\bcs-714-a-multimodal-fusion\data\data"
-    local_train_csv = r"C:\Users\dheem\Downloads\bcs-714-a-multimodal-fusion\train.csv"
-    local_test_csv = r"C:\Users\dheem\Downloads\bcs-714-a-multimodal-fusion\test.csv"
+    data_dir = args.data_dir
+    train_csv = args.train_csv
+    test_csv = args.test_csv
 
-    if args.data_dir and os.path.exists(args.data_dir):
-        data_dir = args.data_dir
-    elif os.path.exists(kaggle_data_dir):
-        data_dir = kaggle_data_dir
-    elif os.path.exists(local_data_dir):
-        data_dir = local_data_dir
-    else:
-        # Fallback to local data folder
-        data_dir = r"data/data"
+    if not (train_csv and test_csv and os.path.exists(train_csv) and os.path.exists(test_csv)):
+        found = False
+        for base, img_sub in candidate_dirs:
+            t_csv = os.path.join(base, "train.csv")
+            te_csv = os.path.join(base, "test.csv")
+            i_dir = os.path.join(base, img_sub)
+            if os.path.exists(t_csv) and os.path.exists(te_csv):
+                train_csv = t_csv
+                test_csv = te_csv
+                data_dir = data_dir or i_dir
+                found = True
+                break
+        
+        if not found and os.path.exists("/kaggle/input"):
+            for root, _, files in os.walk("/kaggle/input"):
+                if "train.csv" in files and "test.csv" in files:
+                    train_csv = os.path.join(root, "train.csv")
+                    test_csv = os.path.join(root, "test.csv")
+                    data_dir = data_dir or (os.path.join(root, "data", "data") if os.path.exists(os.path.join(root, "data", "data")) else os.path.join(root, "data"))
+                    found = True
+                    break
 
-    if args.train_csv and os.path.exists(args.train_csv):
-        train_csv = args.train_csv
-    elif os.path.exists(kaggle_train_csv):
-        train_csv = kaggle_train_csv
-    elif os.path.exists(local_train_csv):
-        train_csv = local_train_csv
-    else:
-        train_csv = "train.csv"
-
-    if args.test_csv and os.path.exists(args.test_csv):
-        test_csv = args.test_csv
-    elif os.path.exists(kaggle_test_csv):
-        test_csv = kaggle_test_csv
-    elif os.path.exists(local_test_csv):
-        test_csv = local_test_csv
-    else:
-        test_csv = "test.csv"
+    train_csv = train_csv or "train.csv"
+    test_csv = test_csv or "test.csv"
+    data_dir = data_dir or "data/data"
 
     print(f"Paths Resolved:\n  Data Dir:  {data_dir}\n  Train CSV: {train_csv}\n  Test CSV:  {test_csv}")
     return data_dir, train_csv, test_csv
@@ -112,7 +116,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
         all_preds.extend(preds)
         all_targets.extend(labels.detach().cpu().numpy())
 
-    epoch_loss = running_loss / len(loader.dataset)
+    epoch_loss = running_loss / len(all_targets) if len(all_targets) > 0 else 0.0
     epoch_bacc = balanced_accuracy_score(all_targets, all_preds)
     return epoch_loss, epoch_bacc
 
@@ -134,7 +138,7 @@ def evaluate(model, loader, criterion, device):
             all_preds.extend(preds)
             all_targets.extend(labels.cpu().numpy())
 
-    epoch_loss = running_loss / len(loader.dataset)
+    epoch_loss = running_loss / len(all_targets) if len(all_targets) > 0 else 0.0
     epoch_bacc = balanced_accuracy_score(all_targets, all_preds)
     return epoch_loss, epoch_bacc
 
@@ -159,6 +163,14 @@ def run_inference(model, test_loader, idx2cat, device, output_path="submission.c
         "id": item_ids,
         "category": predictions
     })
+    
+    # Strict validation
+    assert len(submission_df) == len(test_loader.dataset), f"Row mismatch: expected {len(test_loader.dataset)}, got {len(submission_df)}"
+    assert list(submission_df.columns) == ["id", "category"], "Columns must be exactly ['id', 'category']"
+    assert submission_df["category"].isnull().sum() == 0, "Found NaN values in predictions!"
+    assert submission_df["id"].is_unique, "Found duplicate IDs in submission!"
+    assert submission_df["category"].isin(list(idx2cat.values())).all(), "Found invalid category strings!"
+
     submission_df.to_csv(output_path, index=False)
     print(f"[SUCCESS] Submission exported to: {output_path} ({len(submission_df)} rows)")
     return submission_df
@@ -207,6 +219,20 @@ def main():
     train_raw = pd.read_csv(train_csv_path)
     test_raw = pd.read_csv(test_csv_path)
 
+    # Full Image Pre-Flight Asset Check
+    print("\nRunning Image Asset Pre-Flight Check across dataset...")
+    if os.path.exists(data_dir):
+        existing_files = set(os.listdir(data_dir))
+        train_missing = sum(1 for img in train_raw['image'].dropna() if str(img) not in existing_files)
+        test_missing = sum(1 for img in test_raw['image'].dropna() if str(img) not in existing_files)
+        print("Image Pre-Flight Asset Check: Verified disk assets.")
+        print(f"  Training images missing: {train_missing} / {len(train_raw)}")
+        print(f"  Test images missing: {test_missing} / {len(test_raw)}")
+        if train_missing == len(train_raw) and len(train_raw) > 0:
+            print(f"WARNING: None of the images found in '{data_dir}'! Check that data_dir points to image folder.")
+    else:
+        print(f"Notice: Image directory '{data_dir}' not yet mounted locally. Pre-flight check will verify during dataset access.")
+
     # 2. Create Label Encoders
     unique_cats = sorted(train_raw["category"].unique())
     num_classes = len(unique_cats)
@@ -233,7 +259,8 @@ def main():
     test_dataset = MultimodalDataset(test_raw, data_dir, vocab, max_text_len=args.max_text_len, transform=eval_transform, is_test=True)
 
     num_workers = 2 if sys.platform != "win32" else 0
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=num_workers)
+    # drop_last=True prevents BatchNorm1d failure if final batch size is 1
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=num_workers)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=num_workers)
 
@@ -285,14 +312,22 @@ def main():
             torch.save(model.state_dict(), best_model_path)
             print(f"  -> Model checkpoint updated! (Best Val Balanced Acc: {best_val_bacc*100:.2f}%)")
 
-    # Plot & Save Curves
+    # Plot & Save Curves and History Metrics
     curves_path = os.path.join(args.output_dir, "training_curves.png")
     plot_curves(history, output_path=curves_path)
+
+    history_json_path = os.path.join(args.output_dir, "training_history.json")
+    with open(history_json_path, "w") as f:
+        json.dump(history, f, indent=2)
+    print(f"Saved training history metrics to: {history_json_path}")
 
     # 8. Inference with Best Model
     print("\n[Step 6/6] Generating Final Test Predictions...")
     if os.path.exists(best_model_path):
-        model.load_state_dict(torch.load(best_model_path, map_location=device))
+        try:
+            model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
+        except TypeError:
+            model.load_state_dict(torch.load(best_model_path, map_location=device))
         print(f"Loaded best checkpoint from: {best_model_path}")
 
     sub_path = os.path.join(args.output_dir, "submission.csv")
